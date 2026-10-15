@@ -21,6 +21,8 @@ interface MockOptions {
   orders?: Order[];
   franchise?: Franchise | null;
   franchises?: Franchise[];
+  users?: User[];
+  usersMore?: boolean;
   more?: boolean;
   menu?: Pizza[];
   orderError?: boolean;
@@ -53,6 +55,12 @@ const franchises: Franchise[] = [
   franchise,
   { id: '3', name: 'PizzaCorp', admins: [{ name: 'Jane Doe', email: 'j@jwt.com' }], stores: [{ id: '7', name: 'Spanish Fork', totalRevenue: 0.03 }] },
   { id: '4', name: 'topSpot', admins: [], stores: [] },
+];
+
+const users: User[] = [
+  { id: '1', name: 'Admin', email: 'a@jwt.com', roles: [{ role: 'admin' }] },
+  { id: '3', name: 'Kai Chen', email: 'd@jwt.com', roles: [{ role: 'diner' }] },
+  { id: '9', name: 'pizza diner', email: 'p@jwt.com', roles: [{ role: 'diner' }] },
 ];
 
 const diner: User = { id: '3', name: 'Kai Chen', email: 'd@jwt.com', password: 'a', roles: [{ role: 'diner' }] };
@@ -96,6 +104,28 @@ async function mockApi(page: Page, options: MockOptions) {
       return;
     }
     await route.fulfill({ json: { message: 'logout' } });
+  });
+
+  // List users
+  await page.route(/\/api\/user\?/, async (route) => {
+    await route.fulfill({ json: { users: options.users ?? [], more: options.usersMore ?? false } });
+  });
+
+  // Update / delete user
+  await page.route(/\/api\/user\/[^/]+$/, async (route) => {
+    if (route.request().method() === 'DELETE') {
+      const id = route.request().url().split('/').pop();
+      if (options.users) {
+        const idx = options.users.findIndex((u) => String(u.id) === id);
+        if (idx >= 0) {
+          options.users.splice(idx, 1);
+        }
+      }
+      await route.fulfill({ json: { message: 'user deleted' } });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    await route.fulfill({ json: { user: body, token: 'abcdef' } });
   });
 
   // Currently logged in user
@@ -386,6 +416,46 @@ test('diner dashboard with no orders', async ({ page }) => {
   await expect(page.getByRole('link', { name: 'Buy one' })).toBeVisible();
 });
 
+test('update user persists name on the diner dashboard', async ({ page }) => {
+  await start(page);
+  const email = `user${Math.floor(Math.random() * 10000)}@jwt.com`;
+  await page.goto('/');
+  await page.getByRole('link', { name: 'Register' }).click();
+  await page.getByPlaceholder('Full name').fill('pizza diner');
+  await page.getByPlaceholder('Email address').fill(email);
+  await page.getByPlaceholder('Password').fill('diner');
+  await page.getByRole('button', { name: 'Register' }).click();
+
+  await page.getByRole('link', { name: 'PD' }).click();
+  await expect(page.getByRole('main')).toContainText('pizza diner');
+
+  await page.getByRole('button', { name: 'Edit' }).click();
+  await expect(page.locator('h3')).toContainText('Edit user');
+  await page.locator('#hs-jwt-modal input').first().fill('pizza dinerx');
+  await page.getByRole('button', { name: 'Update' }).click();
+
+  await page.waitForSelector('[role="dialog"].hidden', { state: 'attached' });
+
+  await expect(page.getByRole('main')).toContainText('pizza dinerx');
+});
+
+test('update user changes the email address', async ({ page }) => {
+  await start(page);
+  await page.goto('/');
+  await page.getByRole('link', { name: 'Register' }).click();
+  await page.getByPlaceholder('Full name').fill('pizza diner');
+  await page.getByPlaceholder('Email address').fill('old@jwt.com');
+  await page.getByPlaceholder('Password').fill('diner');
+  await page.getByRole('button', { name: 'Register' }).click();
+
+  await page.getByRole('link', { name: 'PD' }).click();
+  await page.getByRole('button', { name: 'Edit' }).click();
+  await page.locator('#hs-jwt-modal input').nth(1).fill('new@jwt.com');
+  await page.getByRole('button', { name: 'Update' }).click();
+
+  await expect(page.getByRole('main')).toContainText('new@jwt.com');
+});
+
 // ---------------------------------------------------------------------------
 // Franchise dashboard
 // ---------------------------------------------------------------------------
@@ -430,7 +500,6 @@ test('non-admin cannot see the admin dashboard', async ({ page }) => {
 
 test('admin dashboard manages franchises', async ({ page }) => {
   await start(page, { user: admin, franchises, more: true, authenticated: true });
-
   await page.goto('/admin-dashboard');
   await expect(page.getByRole('heading', { name: "Mama Ricci's kitchen" })).toBeVisible();
   await expect(page.getByText('LotaPizza')).toBeVisible();
@@ -438,11 +507,11 @@ test('admin dashboard manages franchises', async ({ page }) => {
 
   // Filter
   await page.getByPlaceholder('Filter franchises').fill('Lota');
-  await page.getByRole('button', { name: 'Submit' }).click();
+  await page.getByRole('button', { name: 'Submit' }).first().click();
 
   // Paginate
-  await page.getByRole('button', { name: '»' }).click();
-  await page.getByRole('button', { name: '«' }).click();
+  await page.getByRole('button', { name: '»' }).first().click();
+  await page.getByRole('button', { name: '«' }).first().click();
 
   // Create a franchise
   await page.getByRole('button', { name: 'Add Franchise' }).click();
@@ -458,4 +527,32 @@ test('admin dashboard manages franchises', async ({ page }) => {
   await expect(page.getByText('LotaPizza')).toBeVisible();
   await page.getByRole('button', { name: 'Close' }).click();
   await expect(page).toHaveURL(/admin-dashboard$/);
+});
+
+test('admin dashboard lists, filters, paginates, and deletes users', async ({ page }) => {
+  await start(page, { user: admin, users: [...users], usersMore: true, authenticated: true });
+  await page.goto('/admin-dashboard');
+  await expect(page.getByRole('heading', { name: "Mama Ricci's kitchen" })).toBeVisible();
+
+  const table = page.getByTestId('users-table');
+  await expect(table).toContainText('Kai Chen');
+  await expect(table).toContainText('d@jwt.com');
+  await expect(table).toContainText('diner');
+
+  // Filter by user name
+  await table.getByPlaceholder('Filter users').fill('Kai');
+  await table.getByRole('button', { name: 'Submit' }).click();
+
+  // Paginate
+  await table.getByRole('button', { name: '»' }).click();
+  await table.getByRole('button', { name: '«' }).click();
+
+  // Delete a user
+  const row = table.locator('tr', { hasText: 'pizza diner' });
+  await row.getByRole('button', { name: 'Delete' }).click();
+  await expect(page.locator('#hs-jwt-delete-user-modal')).toContainText('pizza diner');
+  await page.locator('#hs-jwt-delete-user-modal').getByRole('button', { name: 'Delete' }).click();
+
+  await page.waitForSelector('[role="dialog"].hidden', { state: 'attached' });
+  await expect(table).not.toContainText('p@jwt.com');
 });

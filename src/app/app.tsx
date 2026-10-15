@@ -46,7 +46,7 @@ export default function App() {
   useEffect(() => {
     window.HSStaticMethods.autoInit();
     window.scrollTo(0, 0);
-  }, [location.pathname]);
+  }, [location.pathname, user]);
 
   function loggedIn() {
     return !!user;
@@ -63,7 +63,7 @@ export default function App() {
 
   const navItems = [
     { title: 'Home', to: '/', component: <Home />, display: [] },
-    { title: 'Diner', to: '/diner-dashboard', component: <DinerDashboard user={user} />, display: [] },
+    { title: 'Diner', to: '/diner-dashboard', component: <DinerDashboard user={user} setUser={setUser} />, display: [] },
     { title: 'Order', to: '/menu', component: <Menu />, display: ['nav'] },
     {
       title: 'Franchise',
